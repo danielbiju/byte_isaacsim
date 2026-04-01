@@ -216,7 +216,7 @@ class Byte01V1EnvCfg(DirectRLEnvCfg):
     # Covers ALL robot bodies so we can filter by name in env.py.
     # track_air_time=True is required for feet_air_time reward.
     contact_sensor: ContactSensorCfg = ContactSensorCfg(
-        prim_path="/World/envs/env_.*/Robot/kutta1/.*",
+        prim_path="/World/envs/env_.*/Robot/kutta1new/.*",
         history_length=5,
         update_period=0.005,
         track_air_time=True,
