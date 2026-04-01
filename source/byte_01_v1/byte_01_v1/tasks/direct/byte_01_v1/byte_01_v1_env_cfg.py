@@ -216,7 +216,7 @@ class Byte01V1EnvCfg(DirectRLEnvCfg):
     # Covers ALL robot bodies so we can filter by name in env.py.
     # track_air_time=True is required for feet_air_time reward.
     contact_sensor: ContactSensorCfg = ContactSensorCfg(
-        prim_path="/World/envs/env_.*/Robot/kutta/.*",
+        prim_path="/World/envs/env_.*/Robot/kutta1/.*",
         history_length=5,
         update_period=0.005,
         track_air_time=True,
@@ -256,6 +256,8 @@ class Byte01V1EnvCfg(DirectRLEnvCfg):
     joint_accel_reward_scale:      float = -1e-7
     action_rate_reward_scale:      float = -0.01
     termination_reward_scale:      float = -5.0
-
+    excessive_air_time_scale: float = -3.0  # penalise foot held airborne > 0.5 s
+    foot_spread_scale: float = -5.0         # penalise foot tucked inside base footprint
     # ── orientation threshold ─────────────────────────────────────────────────
     max_tilt_angle_deg: float = 60.0
+    min_base_height: float = 0.25
