@@ -73,3 +73,12 @@ tests/
 # TacSL sensor
 **/tactile_record/*
 **/gelsight_r15_data/*
+**/__pycache__/
+*.pyc
+*.egg-info
+
+**/__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/

@@ -9,7 +9,7 @@
 
 import argparse
 import sys
-
+sys.path.insert(0, r"C:\Users\Admin\byte_trial\byte_01_v1\source\byte_01_v1")
 from isaaclab.app import AppLauncher
 
 # local imports
