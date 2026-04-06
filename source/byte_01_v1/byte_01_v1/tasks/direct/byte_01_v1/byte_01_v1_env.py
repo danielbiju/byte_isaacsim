@@ -80,7 +80,7 @@ class Byte01V1Env(DirectRLEnv):
         self._die_body_ids, _ = self._contact_sensor.find_bodies(
             ["hip1", "hip2", "hip3", "hip4",
              "thigh1", "thigh2", "thigh3", "thigh4",
-             "knee1", "knee2", "knee3", "knee4",]
+             "knee1", "knee2", "knee3", "knee4","base_link"]
         )
 
         # Feet contact indices (contact sensor)
@@ -120,16 +120,14 @@ class Byte01V1Env(DirectRLEnv):
     # --------------------------------------------------------------------------
     def _setup_scene(self):
         self.robot = Articulation(self.cfg.robot_cfg)
-        import omni.usd
-        from pxr import PhysxSchema, UsdPhysics
-        stage = omni.usd.get_context().get_stage()
 
+        # Debug: verify rigid body prims were found
+        import omni.usd
+        from pxr import UsdPhysics
+        stage = omni.usd.get_context().get_stage()
         print("\n=== RIGID BODY PRIMS ===")
         for prim in stage.TraverseAll():
             if prim.HasAPI(UsdPhysics.RigidBodyAPI):
-                if not prim.HasAPI(PhysxSchema.PhysxContactReportAPI):
-                    api = PhysxSchema.PhysxContactReportAPI.Apply(prim)
-                    api.CreateThresholdAttr(0.0)
                 print(f"  {prim.GetPath()}")
         print("========================\n")
 
@@ -145,7 +143,6 @@ class Byte01V1Env(DirectRLEnv):
 
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
-
     # --------------------------------------------------------------------------
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         self.actions = actions.clone().clamp(-1.0, 1.0)
@@ -212,7 +209,7 @@ class Byte01V1Env(DirectRLEnv):
                 self._contact_sensor.data.net_forces_w_history[0, 0, self._feet_ids], dim=-1
             )  # (4,)
             base_z = self.robot.data.root_pos_w[0, 2].item()
-            print(
+            """print(
                 f"[step {step:4d}] "
                 f"hip1={die_force[0].item():6.2f}N  "
                 f"hip2={die_force[1].item():6.2f}N  "
@@ -226,6 +223,7 @@ class Byte01V1Env(DirectRLEnv):
                 f"knee2={die_force[9].item():6.2f}N  "
                 f"knee3={die_force[10].item():6.2f}N  "
                 f"knee4={die_force[11].item():6.2f}N  "
+                f"base_link={die_force[12].item():6.2f}N  "
                 f"base_h={base_z:.4f}m  || "
                 f"FL(f1)={feet_force[0].item():6.2f}N  "
                 f"RL(f2)={feet_force[1].item():6.2f}N  "
@@ -233,6 +231,7 @@ class Byte01V1Env(DirectRLEnv):
                 f"RR(f4)={feet_force[3].item():6.2f}N",
                 flush=True,
             )
+            """
         # ─────────────────────────────────────────────────────────────────────
 
         total_reward = compute_rewards(
@@ -245,6 +244,7 @@ class Byte01V1Env(DirectRLEnv):
             joint_accel,
             self.actions,
             self._last_actions,
+
             feet_contact,
             self._feet_air_time,
             self.cfg.sim.dt * self.cfg.decimation,
@@ -295,7 +295,7 @@ class Byte01V1Env(DirectRLEnv):
         # Condition 2: base collapsed (catches falls that don't involve hip contact)
         base_too_low = self.robot.data.root_pos_w[:, 2] < self.cfg.min_base_height
 
-        died = (body_contact | base_too_low) & (self.episode_length_buf > 10)
+        died = (body_contact | base_too_low) & (self.episode_length_buf > 1)
         return died, time_out
 
     # --------------------------------------------------------------------------
@@ -373,7 +373,8 @@ def compute_rewards(
     trot_reward_scale: float,
     feet_xy_spread: torch.Tensor,        # (N, 4)
     excessive_air_time_scale: float = -3.0,
-    foot_spread_scale: float        = -5.0,
+    foot_spread_scale: float        = -1.0,
+    swing_reward_scale: float = 0.8,
 ) -> torch.Tensor:
 
     # -- velocity tracking
@@ -395,20 +396,21 @@ def compute_rewards(
 
     # -- air-time reward
     # Fire once per touchdown: reward = max(0, air_time - 0.3 s)
-    first_contact = (feet_air_time > 0.0) & feet_contact
-    air_reward    = torch.clamp(feet_air_time - 0.3, min=0.0) * first_contact.float()
+    
     cmd_norm      = torch.norm(commands[:, :2], dim=1)
-    moving        = (cmd_norm > 0.1) & (root_lin_vel_b[:, 0] > 0.05)
-    rew_air_time  = torch.sum(air_reward, dim=1) * moving.float()
-
+    first_contact = (feet_air_time > 0.0) & feet_contact
+    air_reward = feet_air_time * first_contact.float()          # no 0.3s dead zone
+    has_command = (cmd_norm > 0.1)                              # no velocity requirement
+    rew_air_time = torch.sum(air_reward, dim=1) * has_command.float()
+    
     # -- trot synchronisation
     # Diagonal A: FL(col 0) + RR(col 3)
     # Diagonal B: FR(col 2) + RL(col 1)
     fl_rr_contact = feet_contact[:, 0].float() + feet_contact[:, 3].float()
     fr_rl_contact = feet_contact[:, 2].float() + feet_contact[:, 1].float()
-    trot_sync = torch.exp(-torch.square(fl_rr_contact - fr_rl_contact))
+    trot_sync = torch.exp(-torch.square(torch.abs(fl_rr_contact - fr_rl_contact) - 2.0))
     rew_trot  = trot_sync * (cmd_norm > 0.1).float()
-
+    rew_swing = torch.sum((~feet_contact).float(), dim=1) * has_command.float()
     # -- penalty terms
     rew_termination = reset_terminated.float()
     rew_z_vel       = torch.square(root_lin_vel_b[:, 2])
@@ -438,11 +440,12 @@ def compute_rewards(
     rew_excess_air = torch.sum(excessive_air, dim=1)
 
     # -- 2. Foot-spread penalty
-    MIN_SPREAD: float = 0.08
+    MIN_SPREAD: float = 0.04
     tuck_violation  = torch.clamp(MIN_SPREAD - feet_xy_spread, min=0.0)
     rew_foot_spread = torch.sum(tuck_violation, dim=1)
 
     total += excessive_air_time_scale * rew_excess_air
     total += foot_spread_scale        * rew_foot_spread
+    total += swing_reward_scale * rew_swing
 
     return total

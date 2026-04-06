@@ -1,0 +1,2 @@
+conda activate env_isaaclab
+cd C:\Users\Admin\byte_trial\byte_01_v1\source\byte_01_v1\

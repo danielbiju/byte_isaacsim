@@ -216,7 +216,7 @@ class Byte01V1EnvCfg(DirectRLEnvCfg):
     # Covers ALL robot bodies so we can filter by name in env.py.
     # track_air_time=True is required for feet_air_time reward.
     contact_sensor: ContactSensorCfg = ContactSensorCfg(
-        prim_path="/World/envs/env_.*/Robot/kutta1new/.*",
+        prim_path="/World/envs/env_.*/Robot/kutta1/.*",
         history_length=5,
         update_period=0.005,
         track_air_time=True,
@@ -226,7 +226,7 @@ class Byte01V1EnvCfg(DirectRLEnvCfg):
     events: EventCfg = EventCfg()
 
     # ── robot ─────────────────────────────────────────────────────────────────
-    robot_cfg: ArticulationCfg = BYTE_01_CFG.replace(prim_path="/World/envs/env_.*/Robot")
+    robot_cfg: ArticulationCfg = BYTE_01_CFG.replace(prim_path="/World/envs/env_.*/Robot", spawn=BYTE_01_CFG.spawn.replace(activate_contact_sensors=True))
     # ── scene ─────────────────────────────────────────────────────────────────
     scene: InteractiveSceneCfg = InteractiveSceneCfg(
         num_envs=200,
@@ -243,11 +243,13 @@ class Byte01V1EnvCfg(DirectRLEnvCfg):
     # --- positive rewards ----------------------------------------------------
     lin_vel_reward_scale:          float =  1.0
     yaw_rate_reward_scale:         float =  0.5
-    flat_orientation_reward_scale: float =  5.0
-    alive_reward_scale:            float =  2.5
-    feet_air_time_reward_scale:    float =  3.0
+    flat_orientation_reward_scale: float =  2.0
+    alive_reward_scale:            float =  1.5
+    feet_air_time_reward_scale:    float =  5.0
     # --- trot reward ------------------------------------------------------
     trot_reward_scale:             float = 0.5
+    # --- swing reward -----------------------------------------------------
+    swing_reward_scale:            float = 0.8
 
     # --- negative penalties ---------------------------------------------------
     z_vel_reward_scale:            float = -2.0
@@ -261,3 +263,4 @@ class Byte01V1EnvCfg(DirectRLEnvCfg):
     # ── orientation threshold ─────────────────────────────────────────────────
     max_tilt_angle_deg: float = 60.0
     min_base_height: float = 0.25
+
