@@ -124,12 +124,7 @@ class Byte01V1Env(DirectRLEnv):
         # Debug: verify rigid body prims were found
         import omni.usd
         from pxr import UsdPhysics
-        stage = omni.usd.get_context().get_stage()
-        print("\n=== RIGID BODY PRIMS ===")
-        for prim in stage.TraverseAll():
-            if prim.HasAPI(UsdPhysics.RigidBodyAPI):
-                print(f"  {prim.GetPath()}")
-        print("========================\n")
+        
 
         self._contact_sensor = ContactSensor(self.cfg.contact_sensor)
         self.terrain = TerrainImporter(self.cfg.terrain)
