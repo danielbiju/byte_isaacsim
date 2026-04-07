@@ -177,6 +177,8 @@ class Byte01V1Env(DirectRLEnv):
         joint_accel = (joint_vel_cur - self._last_joint_vel) / (
             self.cfg.sim.dt * self.cfg.decimation
         )
+        joint_pos_rel = self.joint_pos[:, self._joint_ids] - self._default_joint_pos
+        base_height   = self.robot.data.root_pos_w[:, 2]        
 
         # -- feet contact
         # Vertical (Z) net contact force, latest history frame.
@@ -259,7 +261,14 @@ class Byte01V1Env(DirectRLEnv):
             feet_xy_spread,
             self.cfg.excessive_air_time_scale,
             self.cfg.foot_spread_scale,
-        )
+            joint_pos_rel,
+            base_height,
+            self.cfg.hip_default_scale,
+            self.cfg.height_reward_scale,
+            self.cfg.low_height_penalty_scale,
+            self.cfg.yaw_spin_penalty_scale,
+            self.cfg.short_air_time_scale,
+                )
 
         # -- roll forward buffers
         self._last_actions   = self.actions.clone()
@@ -341,106 +350,126 @@ class Byte01V1Env(DirectRLEnv):
 # =============================================================================
 @torch.jit.script
 def compute_rewards(
-    root_lin_vel_b: torch.Tensor,
-    root_ang_vel_b: torch.Tensor,
-    commands: torch.Tensor,
-    projected_grav_b: torch.Tensor,
-    tilt_sigma: float,
-    torques: torch.Tensor,
-    joint_accel: torch.Tensor,
-    actions: torch.Tensor,
-    last_actions: torch.Tensor,
-    feet_contact: torch.Tensor,          # (N, 4) bool
-    feet_air_time: torch.Tensor,         # (N, 4) seconds airborne
-    dt: float,
-    reset_terminated: torch.Tensor,
-    lin_vel_reward_scale: float,
-    yaw_rate_reward_scale: float,
-    z_vel_reward_scale: float,
-    ang_vel_reward_scale: float,
-    joint_torque_reward_scale: float,
-    joint_accel_reward_scale: float,
-    action_rate_reward_scale: float,
+    root_lin_vel_b:    torch.Tensor,
+    root_ang_vel_b:    torch.Tensor,
+    commands:          torch.Tensor,
+    projected_grav_b:  torch.Tensor,
+    tilt_sigma:        float,
+    torques:           torch.Tensor,
+    joint_accel:       torch.Tensor,
+    actions:           torch.Tensor,
+    last_actions:      torch.Tensor,
+    feet_contact:      torch.Tensor,   # (N, 4) bool
+    feet_air_time:     torch.Tensor,   # (N, 4) seconds airborne
+    dt:                float,
+    reset_terminated:  torch.Tensor,
+    lin_vel_reward_scale:          float,
+    yaw_rate_reward_scale:         float,
+    z_vel_reward_scale:            float,
+    ang_vel_reward_scale:          float,
+    joint_torque_reward_scale:     float,
+    joint_accel_reward_scale:      float,
+    action_rate_reward_scale:      float,
     flat_orientation_reward_scale: float,
-    alive_reward_scale: float,
-    termination_reward_scale: float,
-    feet_air_time_reward_scale: float,
-    trot_reward_scale: float,
-    feet_xy_spread: torch.Tensor,        # (N, 4)
-    excessive_air_time_scale: float = -3.0,
-    foot_spread_scale: float        = -1.0,
-    swing_reward_scale: float = 0.8,
+    alive_reward_scale:            float,
+    termination_reward_scale:      float,
+    feet_air_time_reward_scale:    float,
+    trot_reward_scale:             float,
+    feet_xy_spread:    torch.Tensor,   # (N, 4)
+    excessive_air_time_scale: float,
+    foot_spread_scale: float,
+    # ── new params ───────────────────────────────────────────────────────────
+    joint_pos_rel:          torch.Tensor,  # (N, 12)
+    base_height:            torch.Tensor,  # (N,)
+    hip_default_scale:      float,
+    height_reward_scale:    float,
+    low_height_penalty_scale: float,
+    yaw_spin_penalty_scale: float,
+    short_air_time_scale:   float,
 ) -> torch.Tensor:
 
-    # -- velocity tracking
-    lin_vel_err = (
-        torch.square(commands[:, 0] - root_lin_vel_b[:, 0])
-        + torch.square(commands[:, 1] - root_lin_vel_b[:, 1])
-    )
+    # ── velocity tracking ────────────────────────────────────────────────────
+    lin_vel_err = (torch.square(commands[:, 0] - root_lin_vel_b[:, 0])
+                 + torch.square(commands[:, 1] - root_lin_vel_b[:, 1]))
     rew_lin_vel = torch.exp(-lin_vel_err / 0.25)
 
     yaw_err = torch.square(commands[:, 2] - root_ang_vel_b[:, 2])
-    rew_yaw = torch.exp(-yaw_err / 0.25)
+    rew_yaw  = torch.exp(-yaw_err / 0.25)
 
-    # -- orientation
-    orient_err = torch.sum(torch.square(projected_grav_b[:, :2]), dim=1)
+    # ── orientation ──────────────────────────────────────────────────────────
+    orient_err    = torch.sum(torch.square(projected_grav_b[:, :2]), dim=1)
     rew_flat_orient = torch.exp(-orient_err / tilt_sigma)
 
-    # -- survival
+    # ── survival ─────────────────────────────────────────────────────────────
     rew_alive = 1.0 - reset_terminated.float()
 
-    # -- air-time reward
-    # Fire once per touchdown: reward = max(0, air_time - 0.3 s)
-    
-    cmd_norm      = torch.norm(commands[:, :2], dim=1)
+    # ── air-time: Gaussian reward centred at 0.5 s ───────────────────────────
+    AIR_TARGET : float = 0.5
+    AIR_SIGMA  : float = 0.04   # controls how tight the peak is
     first_contact = (feet_air_time > 0.0) & feet_contact
-    air_reward = feet_air_time * first_contact.float()          # no 0.3s dead zone
-    has_command = (cmd_norm > 0.1)                              # no velocity requirement
-    rew_air_time = torch.sum(air_reward, dim=1) * has_command.float()
-    
-    # -- trot synchronisation
-    # Diagonal A: FL(col 0) + RR(col 3)
-    # Diagonal B: FR(col 2) + RL(col 1)
-    fl_rr_contact = feet_contact[:, 0].float() + feet_contact[:, 3].float()
-    fr_rl_contact = feet_contact[:, 2].float() + feet_contact[:, 1].float()
+    gauss_air     = torch.exp(-torch.square(feet_air_time - AIR_TARGET) / AIR_SIGMA)
+    cmd_norm  = torch.norm(commands[:, :2], p=2, dim=1)
+    moving    = (cmd_norm > 0.1) | (root_lin_vel_b[:, 0] > 0.05)
+    rew_air_time = torch.sum(gauss_air * first_contact.float(), dim=1) * moving.float()
+
+    # ── short air-time penalty: punish < 0.2 s at touchdown ─────────────────
+    too_short    = torch.clamp(0.2 - feet_air_time, min=0.0) * first_contact.float()
+    rew_short_air = torch.sum(too_short, dim=1) * moving.float()
+
+    # ── excessive air-time penalty: punish > 0.8 s (ongoing) ────────────────
+    MAX_AIR  : float = 0.8
+    excessive_air   = torch.clamp(feet_air_time - MAX_AIR, min=0.0)
+    rew_excess_air  = torch.sum(excessive_air, dim=1)
+
+    # ── trot diagonal synchronisation ────────────────────────────────────────
+    fl_rr_contact = feet_contact[:, 0].float() + feet_contact[:, 3].float()  # FL + RR
+    fr_rl_contact = feet_contact[:, 2].float() + feet_contact[:, 1].float()  # FR + RL
     trot_sync = torch.exp(-torch.square(torch.abs(fl_rr_contact - fr_rl_contact) - 2.0))
     rew_trot  = trot_sync * (cmd_norm > 0.1).float()
-    rew_swing = torch.sum((~feet_contact).float(), dim=1) * has_command.float()
-    # -- penalty terms
-    rew_termination = reset_terminated.float()
-    rew_z_vel       = torch.square(root_lin_vel_b[:, 2])
-    rew_ang_vel_xy  = torch.sum(torch.square(root_ang_vel_b[:, :2]), dim=1)
-    rew_torque      = torch.sum(torch.square(torques), dim=1)
-    rew_joint_accel = torch.sum(torch.square(joint_accel), dim=1)
-    rew_action_rate = torch.sum(torch.square(actions - last_actions), dim=1)
 
-    total = (
-          lin_vel_reward_scale            * rew_lin_vel
-        + yaw_rate_reward_scale           * rew_yaw
-        + flat_orientation_reward_scale   * rew_flat_orient
-        + alive_reward_scale              * rew_alive
-        + feet_air_time_reward_scale      * rew_air_time
-        + termination_reward_scale        * rew_termination
-        + z_vel_reward_scale              * rew_z_vel
-        + ang_vel_reward_scale            * rew_ang_vel_xy
-        + joint_torque_reward_scale       * rew_torque
-        + joint_accel_reward_scale        * rew_joint_accel
-        + action_rate_reward_scale        * rew_action_rate
-        + trot_reward_scale               * rew_trot
-    )
+    # ── height reward band ────────────────────────────────────────────────────
+    rew_height     = torch.clamp(base_height - 0.35, min=0.0)          # reward > 0.35
+    rew_low_height = torch.clamp(0.30 - base_height, min=0.0)          # penalty < 0.30
 
-    # -- 1. Excessive air-time penalty
-    MAX_AIR_TIME: float = 0.5
-    excessive_air  = torch.clamp(feet_air_time - MAX_AIR_TIME, min=0.0)
-    rew_excess_air = torch.sum(excessive_air, dim=1)
+    # ── leg abduction / hip default penalty ──────────────────────────────────
+    rew_hip_default = torch.sum(torch.square(joint_pos_rel), dim=1)
 
-    # -- 2. Foot-spread penalty
-    MIN_SPREAD: float = 0.04
-    tuck_violation  = torch.clamp(MIN_SPREAD - feet_xy_spread, min=0.0)
+    # ── direct yaw spin penalty (when no yaw command) ────────────────────────
+    no_yaw_cmd  = (torch.abs(commands[:, 2]) < 0.1).float()
+    rew_yaw_spin = torch.square(root_ang_vel_b[:, 2]) * no_yaw_cmd
+
+    # ── standard penalties ───────────────────────────────────────────────────
+    rew_termination  = reset_terminated.float()
+    rew_z_vel        = torch.square(root_lin_vel_b[:, 2])
+    rew_ang_vel_xy   = torch.sum(torch.square(root_ang_vel_b[:, :2]), dim=1)
+    rew_torque       = torch.sum(torch.square(torques), dim=1)
+    rew_joint_accel  = torch.sum(torch.square(joint_accel), dim=1)
+    rew_action_rate  = torch.sum(torch.square(actions - last_actions), dim=1)
+
+    MIN_SPREAD : float = 0.08
+    tuck_violation = torch.clamp(MIN_SPREAD - feet_xy_spread, min=0.0)
     rew_foot_spread = torch.sum(tuck_violation, dim=1)
 
-    total += excessive_air_time_scale * rew_excess_air
-    total += foot_spread_scale        * rew_foot_spread
-    total += swing_reward_scale * rew_swing
-
+    # ── total ─────────────────────────────────────────────────────────────────
+    total = (
+        lin_vel_reward_scale          * rew_lin_vel
+      + yaw_rate_reward_scale         * rew_yaw
+      + flat_orientation_reward_scale * rew_flat_orient
+      + alive_reward_scale            * rew_alive
+      + feet_air_time_reward_scale    * rew_air_time
+      + trot_reward_scale             * rew_trot
+      + height_reward_scale           * rew_height
+      + termination_reward_scale      * rew_termination
+      + z_vel_reward_scale            * rew_z_vel
+      + ang_vel_reward_scale          * rew_ang_vel_xy
+      + joint_torque_reward_scale     * rew_torque
+      + joint_accel_reward_scale      * rew_joint_accel
+      + action_rate_reward_scale      * rew_action_rate
+      + excessive_air_time_scale      * rew_excess_air
+      + foot_spread_scale             * rew_foot_spread
+      + hip_default_scale             * rew_hip_default
+      + low_height_penalty_scale      * rew_low_height
+      + yaw_spin_penalty_scale        * rew_yaw_spin
+      + short_air_time_scale          * rew_short_air
+    )
     return total

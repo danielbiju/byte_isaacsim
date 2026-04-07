@@ -213,8 +213,6 @@ class Byte01V1EnvCfg(DirectRLEnvCfg):
     )
 
     # ── contact sensor ────────────────────────────────────────────────────────
-    # Covers ALL robot bodies so we can filter by name in env.py.
-    # track_air_time=True is required for feet_air_time reward.
     contact_sensor: ContactSensorCfg = ContactSensorCfg(
         prim_path="/World/envs/env_.*/Robot/kutta1/.*",
         history_length=5,
@@ -226,7 +224,11 @@ class Byte01V1EnvCfg(DirectRLEnvCfg):
     events: EventCfg = EventCfg()
 
     # ── robot ─────────────────────────────────────────────────────────────────
-    robot_cfg: ArticulationCfg = BYTE_01_CFG.replace(prim_path="/World/envs/env_.*/Robot", spawn=BYTE_01_CFG.spawn.replace(activate_contact_sensors=True))
+    robot_cfg: ArticulationCfg = BYTE_01_CFG.replace(
+        prim_path="/World/envs/env_.*/Robot",
+        spawn=BYTE_01_CFG.spawn.replace(activate_contact_sensors=True),
+    )
+
     # ── scene ─────────────────────────────────────────────────────────────────
     scene: InteractiveSceneCfg = InteractiveSceneCfg(
         num_envs=200,
@@ -235,32 +237,33 @@ class Byte01V1EnvCfg(DirectRLEnvCfg):
     )
 
     # ── velocity command ranges ───────────────────────────────────────────────
-    command_x_range:   list = [0.7, 1.5]
-    command_y_range:   list = [0.0, 0.0]
-    command_yaw_range: list = [0.0, 0.0]
+    command_x_range:   tuple = (0.7, 1.5)
+    command_y_range:   tuple = (0.0, 0.0)
+    command_yaw_range: tuple = (0.0, 0.0)
 
-    # ── reward scales ─────────────────────────────────────────────────────────
-    # --- positive rewards ----------------------------------------------------
+    # ── reward scales — positive ──────────────────────────────────────────────
     lin_vel_reward_scale:          float =  1.0
-    yaw_rate_reward_scale:         float =  0.5
+    yaw_rate_reward_scale:         float =  1.5
     flat_orientation_reward_scale: float =  2.0
     alive_reward_scale:            float =  1.5
-    feet_air_time_reward_scale:    float =  5.0
-    # --- trot reward ------------------------------------------------------
-    trot_reward_scale:             float = 0.5
-    # --- swing reward -----------------------------------------------------
-    swing_reward_scale:            float = 0.8
+    feet_air_time_reward_scale:    float =  4.0
+    trot_reward_scale:             float =  2.5
+    height_reward_scale:           float =  2.0
 
-    # --- negative penalties ---------------------------------------------------
+    # ── reward scales — negative ──────────────────────────────────────────────
     z_vel_reward_scale:            float = -2.0
     ang_vel_reward_scale:          float = -0.05
     joint_torque_reward_scale:     float = -1e-5
     joint_accel_reward_scale:      float = -1e-7
     action_rate_reward_scale:      float = -0.01
     termination_reward_scale:      float = -5.0
-    excessive_air_time_scale: float = -3.0  # penalise foot held airborne > 0.5 s
-    foot_spread_scale: float = -5.0         # penalise foot tucked inside base footprint
-    # ── orientation threshold ─────────────────────────────────────────────────
-    max_tilt_angle_deg: float = 60.0
-    min_base_height: float = 0.25
+    excessive_air_time_scale:      float = -2.0
+    short_air_time_scale:          float = -2.0
+    foot_spread_scale:             float = -5.0
+    hip_default_scale:             float = -1.5
+    low_height_penalty_scale:      float = -3.0
+    yaw_spin_penalty_scale:        float = -2.0
 
+    # ── thresholds ────────────────────────────────────────────────────────────
+    max_tilt_angle_deg: float = 60.0
+    min_base_height:    float = 0.25
