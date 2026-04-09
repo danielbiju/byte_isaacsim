@@ -12,7 +12,7 @@
 
 import gymnasium as gym
 
-from .direct.byte_01_v1.byte_01_v1_env_old import Byte01V1Env
+from .direct.byte_01_v1.byte_01_v1_env import Byte01V1Env
 from .direct.byte_01_v1.byte_01_v1_env_cfg import Byte01V1EnvCfg
 
 gym.register(

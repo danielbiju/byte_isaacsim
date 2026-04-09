@@ -124,12 +124,12 @@ class Byte01V1EnvCfg(DirectRLEnvCfg):
     command_yaw_range: tuple = (0.0, 0.0)
 
     # ── reward scales — positive ──────────────────────────────────────────────
-    lin_vel_reward_scale: float = 5.0
+    lin_vel_reward_scale: float = 4.0
     yaw_rate_reward_scale: float = 2.0
     flat_orientation_reward_scale: float = 2.5
     alive_reward_scale: float = 1.0
     feet_air_time_reward_scale: float = 2.0
-    trot_reward_scale: float = 3.0
+    trot_reward_scale: float = 5.0
     height_reward_scale: float = 2.0
 
     # ── reward scales — negative ──────────────────────────────────────────────
@@ -138,7 +138,7 @@ class Byte01V1EnvCfg(DirectRLEnvCfg):
     joint_torque_reward_scale: float = -1e-5
     joint_accel_reward_scale: float = -1e-7
     action_rate_reward_scale: float = -0.01
-    termination_reward_scale: float = -3.0
+    termination_reward_scale: float = -5.0
     excessive_air_time_scale: float = -3.5
     short_air_time_scale: float = -2.5
     foot_spread_scale: float = -4.0
