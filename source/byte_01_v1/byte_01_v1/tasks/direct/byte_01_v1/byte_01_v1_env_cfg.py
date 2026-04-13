@@ -36,8 +36,8 @@ class EventCfg:
         mode="startup",
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=".*"),
-            "static_friction_range": (0.8, 0.8),
-            "dynamic_friction_range": (0.6, 0.6),
+            "static_friction_range": (0.4, 1.2), 
+            "dynamic_friction_range": (0.3, 1.0),
             "restitution_range": (0.0, 0.0),
             "num_buckets": 64,
         },
@@ -51,7 +51,29 @@ class EventCfg:
             "operation": "add",
         },
     )
+    push_robot = EventTerm(
+        func=mdp.push_by_setting_velocity,
+        mode="interval",
+        interval_range_s=(5.0, 10.0),
+        params={
+            "asset_cfg": SceneEntityCfg("robot"),
+            "velocity_range": {
+                "x": (-0.4, 0.4), "y": (-0.4, 0.4), "z": (-0.1, 0.1),
+                "roll": (-0.3, 0.3), "pitch": (-0.3, 0.3), "yaw": (-0.3, 0.3),
+            },
+        },
+    )
 
+    randomize_actuator_gains = EventTerm(
+        func=mdp.randomize_actuator_gains,
+        mode="startup",
+        params={
+            "asset_cfg": SceneEntityCfg("robot", joint_names="revolute.*"),
+            "stiffness_distribution_params": (0.75, 1.25),
+            "damping_distribution_params":   (0.75, 1.25),
+            "operation": "scale",
+        },
+    )
 
 @configclass
 class Byte01V1EnvCfg(DirectRLEnvCfg):
@@ -61,7 +83,7 @@ class Byte01V1EnvCfg(DirectRLEnvCfg):
     episode_length_s: float = 20.0
     action_scale: float = 0.5
     action_space: int = 12
-    observation_space: int = 48
+    observation_space: int = 52
     state_space: int = 0
     debug_vis: bool = True
 
@@ -124,9 +146,9 @@ class Byte01V1EnvCfg(DirectRLEnvCfg):
     command_yaw_range: tuple = (0.0, 0.0)
 
     # ── reward scales — positive ──────────────────────────────────────────────
-    lin_vel_reward_scale: float = 5.0
+    lin_vel_reward_scale: float = 3.5
     yaw_rate_reward_scale: float = 2.0
-    flat_orientation_reward_scale: float = 2.5
+    flat_orientation_reward_scale: float = 2.0
     alive_reward_scale: float = 1.0
     feet_air_time_reward_scale: float = 2.0
     trot_reward_scale: float = 3.0
@@ -140,7 +162,7 @@ class Byte01V1EnvCfg(DirectRLEnvCfg):
     action_rate_reward_scale: float = -0.01
     termination_reward_scale: float = -3.0
     excessive_air_time_scale: float = -3.5
-    short_air_time_scale: float = -2.5
+    short_air_time_scale: float = -3.5
     foot_spread_scale: float = -4.0
     hip_default_scale: float = -1.5
     low_height_penalty_scale: float = -3.0
@@ -153,4 +175,4 @@ class Byte01V1EnvCfg(DirectRLEnvCfg):
 
     # ── thresholds ────────────────────────────────────────────────────────────
     max_tilt_angle_deg: float = 40.0
-    min_base_height: float = 0.30
+    min_base_height: float = 0.20

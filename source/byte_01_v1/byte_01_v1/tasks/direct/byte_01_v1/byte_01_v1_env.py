@@ -37,10 +37,10 @@ class Byte01V1Env(DirectRLEnv):
     Diagonal A : FL(feet1=0) + RR(feet4=3) swing together
     Diagonal B : FR(feet3=2) + RL(feet2=1) swing together
 
-    Observation space (48-dim):
-    [base_lin_vel(3), base_ang_vel(3), projected_gravity(3),
-     vel_commands(3), joint_pos_rel(12), joint_vel(12), last_actions(12)]
-
+    Observation space (52-dim):
+    # [base_lin_vel(3), base_ang_vel(3), projected_gravity(3),
+    #  vel_commands(3), joint_pos_rel(12), joint_vel(12), last_actions(12),
+    #  feet_contact(4)]
     Action space (12-dim):
     Joint position deltas [rad] -> target = default_pos + action_scale * action
 
@@ -79,9 +79,16 @@ class Byte01V1Env(DirectRLEnv):
 
         # -- joint indices
         self._joint_ids, _ = self.robot.find_joints("revolute.*")
-        self._hip_joint_ids = torch.tensor([0, 3, 6, 9], device=self.device)
+        self._hip_joint_ids = torch.tensor([0, 1, 2, 3], device=self.device)
         self._num_joints = len(self._joint_ids)
+        # 0=revolute1(FL hip), 1=revolute10(RR hip), 2=revolute4(RL hip), 3=revolute7(FR hip)
 
+
+        # DEBUG: verify joint ordering — remove after confirmation
+        _ids, _names = self.robot.find_joints("revolute.*")
+        print("=== JOINT ORDER CHECK ===")
+        for i, (idx, name) in enumerate(zip(_ids, _names)):
+            print(f"  policy_idx={i}  sim_idx={idx}  name={name}")
         # -- contact sensor body indices
         # Die bodies: base_link + all 4 hips.
         # Episode terminates if ANY of these registers > 1 N contact.
@@ -116,6 +123,18 @@ class Byte01V1Env(DirectRLEnv):
             :, self._joint_ids
         ].clone()
 
+        # Joint sign normalization: maps policy actions to physically consistent directions.
+        # Positive = hip out, thigh swing forward-down, knee bend down — for ALL legs.
+        # Order follows policy indices from find_joints("revolute.*"):
+        # [rev1(FLhip), rev10(RRhip), rev4(RLhip), rev7(FRhip),
+        #  rev2(FLthigh), rev11(RRthigh), rev5(RLthigh), rev8(FRthigh),
+        #  rev3(FLknee), rev12(RRknee), rev6(RLknee), rev9(FRknee)]
+        self._joint_signs = torch.tensor([
+            +1.0, -1.0, +1.0, -1.0,   # hips: all +X axis, same sign
+            -1.0, +1.0, -1.0, +1.0,   # thighs: FL(+Y), RR(-Y), RL(+Y), FR(-Y)
+            -1.0, +1.0, -1.0, +1.0,   # knees:  FL(-Y), RR(+Y), RL(-Y), FR(+Y)
+        ], device=self.device)
+
         # -- per-env state buffers
         self.joint_pos = self.robot.data.joint_pos
         self.joint_vel = self.robot.data.joint_vel
@@ -125,6 +144,10 @@ class Byte01V1Env(DirectRLEnv):
         # Airborne timer: increments every step, resets to 0 on touchdown
         # Shape (N, 4): columns -> FL(feet1) RL(feet2) FR(feet3) RR(feet4)
         self._feet_air_time = torch.zeros(self.num_envs, self._num_feet, device=self.device)
+
+        # Feet contact buffer — computed in _get_observations, consumed in _get_rewards
+        # Shape (N, 4): FL(feet1)=0  RL(feet2)=1  FR(feet3)=2  RR(feet4)=3
+        self._feet_contact = torch.zeros(self.num_envs, self._num_feet, dtype=torch.bool, device=self.device)
 
         # Velocity commands [x_vel m/s, y_vel m/s, yaw_rate rad/s]
         self._commands = torch.zeros(self.num_envs, 3, device=self.device)
@@ -239,15 +262,20 @@ class Byte01V1Env(DirectRLEnv):
         self.actions = actions.clone().clamp(-1.0, 1.0)
 
     def _apply_action(self) -> None:
-        targets = self._default_joint_pos + self.cfg.action_scale * self.actions
+        # Multiply action by sign vector so positive always = same physical direction
+        targets = self._default_joint_pos + self.cfg.action_scale * self.actions * self._joint_signs
         self.robot.set_joint_position_target(targets, joint_ids=self._joint_ids)
-
     # --------------------------------------------------------------------------
     def _get_observations(self) -> dict:
         self.joint_pos = self.robot.data.joint_pos
         self.joint_vel = self.robot.data.joint_vel
 
-        joint_pos_rel = self.joint_pos[:, self._joint_ids] - self._default_joint_pos
+        joint_pos_rel = (self.joint_pos[:, self._joint_ids] - self._default_joint_pos) * self._joint_signs   # ← multiply by signs to get consistent joint ordering and direction
+        # ── Compute feet contact and store for _get_rewards ──────────────────
+        foot_forces = self._contact_sensor.data.net_forces_w_history[
+            :, 0, self._feet_ids, 2
+        ]
+        self._feet_contact = foot_forces > 1.0   # (N, 4) bool
 
         obs = torch.cat(
             [
@@ -258,12 +286,12 @@ class Byte01V1Env(DirectRLEnv):
                 joint_pos_rel,                           # (N, 12)
                 self.joint_vel[:, self._joint_ids],      # (N, 12)
                 self._last_actions,                      # (N, 12)
+                self._feet_contact.float(),              # (N, 4)  ← ADD THIS
             ],
             dim=-1,
-        )  # -> (N, 48)
+        )  # -> (N, 52)
 
         return {"policy": obs}
-
     # --------------------------------------------------------------------------
     def _get_rewards(self) -> torch.Tensor:
         self.joint_pos = self.robot.data.joint_pos
@@ -277,12 +305,7 @@ class Byte01V1Env(DirectRLEnv):
         base_height = self.robot.data.root_pos_w[:, 2]
 
         # -- feet contact
-        # Vertical (Z) net contact force, latest history frame.
-        # Shape (N, 4) -> col 0=FL(feet1) col 1=RL(feet2) col 2=FR(feet3) col 3=RR(feet4)
-        foot_forces = self._contact_sensor.data.net_forces_w_history[
-            :, 0, self._feet_ids, 2
-        ]
-        feet_contact = foot_forces > 1.0  # (N, 4) bool
+        feet_contact = self._feet_contact  # (N, 4) bool — computed in _get_observations
 
         # XY spread: distance of each foot from base CoM in the horizontal plane
         feet_pos_w = self.robot.data.body_pos_w[:, self._feet_body_ids, :]  # (N, 4, 3)
@@ -391,6 +414,7 @@ class Byte01V1Env(DirectRLEnv):
         self._last_actions[env_ids] = 0.0
         self._last_joint_vel[env_ids] = 0.0
         self._feet_air_time[env_ids] = 0.0
+        self._feet_contact[env_ids] = False 
 
 
 # =============================================================================
@@ -495,8 +519,8 @@ def compute_rewards(
     rew_alive = 1.0 - reset_terminated.float()
 
     # ── air-time: Gaussian reward centred at 0.2 s ────────────────────────────
-    AIR_TARGET: float = 0.4
-    AIR_SIGMA: float = 0.08
+    AIR_TARGET: float = 0.25
+    AIR_SIGMA: float = 0.06
     first_contact = (feet_air_time > 0.0) & feet_contact
     gauss_air = torch.exp(-torch.square(feet_air_time - AIR_TARGET) / AIR_SIGMA)
     cmd_norm = torch.norm(commands[:, :2], p=2, dim=1)
@@ -508,7 +532,7 @@ def compute_rewards(
     rew_short_air = torch.sum(too_short, dim=1) * moving.float()
 
     # ── excessive air-time penalty: punish > 0.4 s (ongoing) ─────────────────
-    MAX_AIR: float = 0.8
+    MAX_AIR: float = 0.4
     excessive_air = torch.clamp(feet_air_time - MAX_AIR, min=0.0)
     rew_excess_air = torch.sum(excessive_air, dim=1)
 
