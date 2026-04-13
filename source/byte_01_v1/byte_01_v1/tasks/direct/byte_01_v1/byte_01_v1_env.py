@@ -130,7 +130,7 @@ class Byte01V1Env(DirectRLEnv):
         #  rev2(FLthigh), rev11(RRthigh), rev5(RLthigh), rev8(FRthigh),
         #  rev3(FLknee), rev12(RRknee), rev6(RLknee), rev9(FRknee)]
         self._joint_signs = torch.tensor([
-            +1.0, -1.0, +1.0, -1.0,   # hips: all +X axis, same sign
+            +1.0, +1.0, +1.0, +1.0,   # hips: all +X axis, same sign
             -1.0, +1.0, -1.0, +1.0,   # thighs: FL(+Y), RR(-Y), RL(+Y), FR(-Y)
             -1.0, +1.0, -1.0, +1.0,   # knees:  FL(-Y), RR(+Y), RL(-Y), FR(+Y)
         ], device=self.device)

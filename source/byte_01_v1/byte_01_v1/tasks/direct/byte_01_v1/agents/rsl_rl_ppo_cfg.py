@@ -10,7 +10,7 @@ from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, R
 
 @configclass
 class PPORunnerCfg(RslRlOnPolicyRunnerCfg):
-    num_steps_per_env = 64
+    num_steps_per_env = 16 #64 
     max_iterations = 30000
     save_interval = 100
     experiment_name = "byte_01_v1_walk"
